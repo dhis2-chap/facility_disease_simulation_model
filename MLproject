@@ -1,0 +1,208 @@
+name: facility_disease_simulation_model
+
+uv_env: pyproject.toml
+
+required_covariates:
+  - rainfall
+  - mean_temperature
+  - population
+
+supported_period_type: month
+
+user_options:
+  seed:
+    title: seed
+    type: integer
+    default: 0
+    description: "Random seed"
+  annual_incidence:
+    title: annual_incidence
+    type: number
+    default: 0.15
+    description: "Reported cases per person per year in a facility's first year, before the facility effect"
+  facility_sd:
+    title: facility_sd
+    type: number
+    default: 0.8
+    description: "Standard deviation of the log facility effect (access, catchment, testing)"
+  spatial_fraction:
+    title: spatial_fraction
+    type: number
+    default: 0.5
+    description: "Share of the facility effect variance that is spatially smooth, shared with nearby facilities"
+  spatial_range_km:
+    title: spatial_range_km
+    type: number
+    default: 75.0
+    description: "Length scale of the spatial facility effect"
+  rainfall_lag_min:
+    title: rainfall_lag_min
+    type: integer
+    default: 1
+    description: "Shortest rainfall lag in months driving transmission"
+  rainfall_lag_max:
+    title: rainfall_lag_max
+    type: integer
+    default: 2
+    description: "Longest rainfall lag in months driving transmission"
+  facility_lag_shift_max:
+    title: facility_lag_shift_max
+    type: integer
+    default: 1
+    description: "Each facility's rainfall lags are shifted by a random 0 to this many months"
+  rainfall_half_saturation:
+    title: rainfall_half_saturation
+    type: number
+    default: 80.0
+    description: "Lagged monthly rainfall (mm) at which the season reaches half its rainfall-driven increase"
+  dry_season_level:
+    title: dry_season_level
+    type: number
+    default: 0.15
+    description: "Seasonal multiplier with no rain, relative to a saturated rainy season"
+  dry_season_sd:
+    title: dry_season_sd
+    type: number
+    default: 0.3
+    description: "Standard deviation of the log facility-specific dry-season level"
+  season_amplitude_sd:
+    title: season_amplitude_sd
+    type: number
+    default: 0.25
+    description: "Standard deviation of the log rainy-season amplitude, drawn per facility and year"
+  temperature_threshold:
+    title: temperature_threshold
+    type: number
+    default: 32.0
+    description: "Mean temperature above which heat suppresses transmission"
+  temperature_effect:
+    title: temperature_effect
+    type: number
+    default: 0.1
+    description: "Drop in log expected cases per degree above temperature_threshold"
+  year_sd:
+    title: year_sd
+    type: number
+    default: 0.15
+    description: "Standard deviation of the log year effect shared by all facilities"
+  latent_ar:
+    title: latent_ar
+    type: number
+    default: 0.7
+    description: "Month-to-month autocorrelation of the facility's unexplained log variation"
+  latent_sd:
+    title: latent_sd
+    type: number
+    default: 0.3
+    description: "Standard deviation of the facility's unexplained log variation"
+  annual_trend:
+    title: annual_trend
+    type: number
+    default: 0.03
+    description: "Linear yearly growth in log expected cases shared by all facilities, e.g. from wider testing"
+  global_trend_sd:
+    title: global_trend_sd
+    type: number
+    default: 0.15
+    description: "Yearly step standard deviation of the smooth trend shared by all facilities"
+  facility_trend_sd:
+    title: facility_trend_sd
+    type: number
+    default: 0.08
+    description: "Yearly step standard deviation of each facility's own smooth trend around the global trend"
+  intervention_effect:
+    title: intervention_effect
+    type: number
+    default: 0.0
+    description: "Fractional reduction in cases during the months of a seasonal intervention, e.g. chemoprevention"
+  intervention_start_year:
+    title: intervention_start_year
+    type: integer
+    default: 0
+    description: "First year of the seasonal intervention"
+  intervention_first_month:
+    title: intervention_first_month
+    type: integer
+    default: 7
+    description: "First month (1-12) of the seasonal intervention each year"
+  intervention_last_month:
+    title: intervention_last_month
+    type: integer
+    default: 10
+    description: "Last month (1-12) of the seasonal intervention each year; may be before the first month to wrap the new year"
+  dispersion:
+    title: dispersion
+    type: number
+    default: 5.0
+    description: "Negative binomial size; smaller means noisier counts"
+  stockout_rate:
+    title: stockout_rate
+    type: number
+    default: 0.01
+    description: "Probability that a test-kit stockout starts in a facility month; it lasts 1-3 months"
+  stockout_factor:
+    title: stockout_factor
+    type: number
+    default: 0.3
+    description: "Share of cases still reported during a stockout"
+  outlier_rate:
+    title: outlier_rate
+    type: number
+    default: 0.002
+    description: "Probability that a reported value is a data-entry outlier"
+  outlier_factor:
+    title: outlier_factor
+    type: number
+    default: 10.0
+    description: "Multiplier for a data-entry outlier"
+  completeness_mean:
+    title: completeness_mean
+    type: number
+    default: 0.9
+    description: "Mean share of months a facility reports; each facility draws its own from a beta distribution"
+  completeness_concentration:
+    title: completeness_concentration
+    type: number
+    default: 10.0
+    description: "Concentration of the beta distribution of facility completeness; smaller means more spread"
+  outage_rate:
+    title: outage_rate
+    type: number
+    default: 0.004
+    description: "Probability that a reporting outage starts in a facility month"
+  outage_max_months:
+    title: outage_max_months
+    type: integer
+    default: 18
+    description: "Longest reporting outage in months; lengths are uniform from 1"
+  late_start_fraction:
+    title: late_start_fraction
+    type: number
+    default: 0.05
+    description: "Share of facilities that start reporting after the first month"
+  late_start_max_months:
+    title: late_start_max_months
+    type: integer
+    default: 96
+    description: "Latest start month for a late-starting facility, counted from the first month"
+
+entry_points:
+  train:
+    parameters:
+      train_data: str
+      model: str
+    command: "python simulator.py train {train_data} {model}"
+  predict:
+    parameters:
+      historic_data: str
+      future_data: str
+      model: str
+      out_file: str
+    command: "python simulator.py predict {model} {historic_data} {future_data} {out_file}"
+  simulate:
+    parameters:
+      covariates: str
+      out_file: str
+      model_config: str
+      polygons: str
+    command: "python simulator.py simulate {covariates} {out_file} {model_config} {polygons}"

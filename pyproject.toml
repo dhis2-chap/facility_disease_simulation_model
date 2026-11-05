@@ -1,0 +1,19 @@
+[project]
+name = "facility-disease-simulation-model"
+version = "0.1.0"
+description = "Chap simulation model: monthly disease cases at health facilities, driven by climate and population"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "pandas",
+    "pyyaml",
+]
+
+[dependency-groups]
+dev = [
+    "matplotlib>=3.11.2",
+    "pytest",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
