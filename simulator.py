@@ -174,11 +174,16 @@ def simulate_facility(df: pd.DataFrame, location: str, coords: tuple[float, floa
     shift = int(facility.integers(0, int(params["facility_lag_shift_max"]) + 1))
     lag_min = int(params["rainfall_lag_min"]) + shift
     lag_max = int(params["rainfall_lag_max"]) + shift
-    # A lag window of whole months [lag_min, lag_max] covers periods [lag_min, lag_max + 1) months back.
-    rain = lagged_mean(df["rainfall"].to_numpy(dtype=float), round(lag_min * per_month), round((lag_max + 1) * per_month) - 1)
+    if per_month == 1:
+        lag_periods = (lag_min, lag_max)
+    else:
+        # Months lag_min..lag_max back span lag_min - 0.5 to lag_max + 0.5 months from a period in mid-month.
+        lag_periods = (round((lag_min - 0.5) * per_month), round((lag_max + 0.5) * per_month) - 1)
+    rain = lagged_mean(df["rainfall"].to_numpy(dtype=float), *lag_periods)
     dry = float(params["dry_season_level"]) * np.exp(facility.normal(0, float(params["dry_season_sd"])))
     amplitude = np.exp([rng_for(seed, "amplitude", location, str(y)).normal(0, float(params["season_amplitude_sd"])) for y in years])
-    seasonal = dry + amplitude * rain / (rain + float(params["rainfall_half_saturation"]))
+    # The half-saturation rainfall is per month; weekly rainfall totals are about a quarter of monthly ones.
+    seasonal = dry + amplitude * rain / (rain + float(params["rainfall_half_saturation"]) / per_month)
     # annual_incidence is the incidence in the facility's first year, before the facility effect.
     seasonal = seasonal / seasonal[:first_year].mean()
 

@@ -54,7 +54,7 @@ user_options:
     title: rainfall_half_saturation
     type: number
     default: 80.0
-    description: "Lagged monthly rainfall (mm) at which the season reaches half its rainfall-driven increase"
+    description: "Lagged rainfall (mm per month; scaled to the period for weekly data) at which the season reaches half its rainfall-driven increase"
   dry_season_level:
     title: dry_season_level
     type: number

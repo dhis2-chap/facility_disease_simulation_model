@@ -83,7 +83,7 @@ Months a facility did not report are left missing:
 ## Monthly and weekly data
 
 The simulator reads the period type from the data. Rates, lags and durations are given in months and converted
-to periods: weekly data uses the same rainfall lag window in weeks, a stockout or outage rate per week of
+to periods: weekly data uses the same rainfall lag window in weeks, `rainfall_half_saturation / 4.35` per week, a stockout or outage rate per week of
 `rate / 4.35`, durations in weeks, and the latent autocorrelation `latent_ar ** (1 / 4.35)` per week, so both
 period types describe the same underlying process. Population is spread over `periods_per_year`.
 
