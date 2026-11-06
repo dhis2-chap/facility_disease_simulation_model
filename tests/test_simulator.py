@@ -6,15 +6,18 @@ import pandas as pd
 import pytest
 import yaml
 
-from simulator import simulate
+from simulator import period_start, simulate
 
 ROOT = Path(__file__).parents[1]
 
 
-@pytest.fixture
-def covariates(tmp_path):
+@pytest.fixture(params=["month", "week"])
+def covariates(request, tmp_path):
     prefix = tmp_path / "cov"
-    subprocess.run([sys.executable, ROOT / "make_covariates.py", prefix, "--n-facilities", "3", "--n-years", "2"], check=True)
+    subprocess.run(
+        [sys.executable, ROOT / "make_covariates.py", prefix, "--n-facilities", "3", "--n-years", "2", "--period", request.param],
+        check=True,
+    )
     # chap passes the covariates with an index column
     df = pd.read_csv(prefix.with_suffix(".csv"))
     df.to_csv(prefix.with_suffix(".csv"))
@@ -34,9 +37,9 @@ def test_continuing_matches_one_run(tmp_path, covariates):
     full = run(tmp_path, covariates_file, polygons, config, "full.csv")
     assert full["disease_cases"].notna().any()
 
-    first_year = full[full["time_period"] < "2016-01"]
+    first_year = full[full["time_period"] < "2016"]
     rest = pd.read_csv(covariates_file, index_col=0)
-    rest = rest[rest["time_period"] >= "2016-01"]
+    rest = rest[rest["time_period"] >= "2016"]
     continued_input = tmp_path / "continued_input.csv"
     pd.concat([first_year, rest]).to_csv(continued_input)
     continued = run(tmp_path, continued_input, polygons, config, "continued.csv")
@@ -74,10 +77,11 @@ def test_intervention_window_can_wrap_the_new_year(tmp_path, covariates):
     def total(options):
         config.write_text(yaml.safe_dump({"user_option_values": {"seed": 3, "completeness_mean": 0.999, **options}}))
         out = run(tmp_path, covariates_file, polygons, config, "out.csv")
-        return out.groupby(out["time_period"].str[5:7])["disease_cases"].sum()
+        months = [period_start(p).month for p in out["time_period"]]
+        return out.groupby(months)["disease_cases"].sum()
 
     window = {"intervention_first_month": 11, "intervention_last_month": 2}
     without = total(window)
     with_intervention = total({**window, "intervention_effect": 0.9})
-    assert (with_intervention[["11", "12", "01", "02"]] < without[["11", "12", "01", "02"]]).all()
-    assert (with_intervention[["05", "06", "07"]] == without[["05", "06", "07"]]).all()
+    assert (with_intervention[[11, 12, 1, 2]] < without[[11, 12, 1, 2]]).all()
+    assert (with_intervention[[5, 6, 7]] == without[[5, 6, 7]]).all()

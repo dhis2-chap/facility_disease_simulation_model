@@ -1,7 +1,7 @@
 """Generate synthetic health facility covariates for ``chap simulate``.
 
 Writes ``<out>.csv`` with ``time_period``, ``location``, ``rainfall``, ``mean_temperature`` and ``population`` for
-every facility and month, and ``<out>.geojson`` with a small square polygon around each facility, which the
+every facility and period (month or ISO week), and ``<out>.geojson`` with a small square polygon around each facility, which the
 simulator uses for the facility's coordinates.
 
 Facilities are placed in clusters (think districts) inside a bounding box. Rainfall has one rainy season per year,
@@ -10,7 +10,9 @@ arguments below; run with ``--help`` to list them.
 """
 
 import argparse
+import calendar
 import json
+from datetime import date, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -31,13 +33,36 @@ def place_facilities(args: argparse.Namespace, rng: np.random.Generator) -> pd.D
     return pd.DataFrame({"location": ids, "lat": lat, "lon": lon})
 
 
-def rainfall(lat: np.ndarray, months: pd.PeriodIndex, args: argparse.Namespace, rng: np.random.Generator) -> np.ndarray:
-    """Monthly rainfall (mm) with one rainy season per year and year-to-year anomalies in total and timing."""
+def make_calendar(args: argparse.Namespace) -> pd.DataFrame:
+    """The periods to generate: chap label, calendar year and position in the year in months (1 = mid-January).
+
+    Weekly periods are ISO weeks, placed by their middle day; a week in the middle of a month gets that month's
+    number, so the same climate arguments describe monthly and weekly data.
+    """
+    if args.period == "month":
+        months = pd.period_range(args.start, periods=12 * args.n_years, freq="M")
+        return pd.DataFrame({"label": months.strftime("%Y-%m"), "year": months.year, "month": months.month.astype(float), "per_year": 12.0})
+    start = date.fromisoformat(args.start + "-01")
+    end = date(start.year + args.n_years, start.month, 1)
+    monday = start - timedelta(days=start.weekday())
+    rows = []
+    while monday < end:
+        mid = monday + timedelta(days=3)
+        position = mid.month + (mid.day - 0.5) / calendar.monthrange(mid.year, mid.month)[1] - 0.5
+        rows.append({"label": monday.strftime("%G-W%V"), "year": mid.year, "month": position, "per_year": 365.25 / 7})
+        monday += timedelta(days=7)
+    return pd.DataFrame(rows)
+
+
+def rainfall(lat: np.ndarray, cal: pd.DataFrame, args: argparse.Namespace, rng: np.random.Generator) -> np.ndarray:
+    """Rainfall (mm per period) with one rainy season per year and year-to-year anomalies in total and timing."""
     lat_mid = (args.bbox[0] + args.bbox[1]) / 2
     annual_total = np.clip(args.annual_rainfall + args.rainfall_gradient * (lat - lat_mid), 0.1 * args.annual_rainfall, None)
-    years = months.year.to_numpy()
-    month_of_year = months.month.to_numpy()
-    out = np.empty((len(lat), len(months)))
+    years = cal["year"].to_numpy()
+    month_of_year = cal["month"].to_numpy()
+    # Weekly rainfall is noisier than monthly.
+    noise_shape = 4.0 if cal["per_year"].iloc[0] == 12 else 2.0
+    out = np.empty((len(lat), len(cal)))
     for year in np.unique(years):
         cols = years == year
         total = annual_total * np.exp(rng.normal(0, args.rainfall_year_sd) + rng.normal(0, 0.1, len(lat)))
@@ -46,24 +71,24 @@ def rainfall(lat: np.ndarray, months: pd.PeriodIndex, args: argparse.Namespace, 
         distance = (month_of_year[cols][None, :] - peak + 6) % 12 - 6
         shape = np.exp(-0.5 * (distance / args.rain_season_sd_months) ** 2) + np.zeros((len(lat), 1))
         shape /= shape.sum(axis=1, keepdims=True)
-        out[:, cols] = total[:, None] * shape * rng.gamma(4.0, 1 / 4.0, shape.shape)
+        out[:, cols] = total[:, None] * shape * rng.gamma(noise_shape, 1 / noise_shape, shape.shape)
     return out
 
 
-def temperature(n: int, months: pd.PeriodIndex, args: argparse.Namespace, rng: np.random.Generator) -> np.ndarray:
-    """Monthly mean temperature: an annual cycle, yearly anomalies, a warming trend and monthly noise."""
-    phase = 2 * np.pi * (months.month.to_numpy() - args.hottest_month) / 12
+def temperature(n: int, cal: pd.DataFrame, args: argparse.Namespace, rng: np.random.Generator) -> np.ndarray:
+    """Mean temperature: an annual cycle, yearly anomalies, a warming trend and per-period noise."""
+    phase = 2 * np.pi * (cal["month"].to_numpy() - args.hottest_month) / 12
     cycle = args.mean_temperature + args.temperature_amplitude * np.cos(phase)
-    year_anomaly = {y: rng.normal(0, 0.3) for y in np.unique(months.year)}
-    anomaly = np.array([year_anomaly[y] for y in months.year])
-    warming = args.warming_per_year * np.arange(len(months)) / 12
-    return (cycle + anomaly + warming)[None, :] + rng.normal(0, 0.7, (n, len(months)))
+    year_anomaly = {y: rng.normal(0, 0.3) for y in np.unique(cal["year"])}
+    anomaly = np.array([year_anomaly[y] for y in cal["year"]])
+    warming = args.warming_per_year * np.arange(len(cal)) / cal["per_year"].to_numpy()
+    return (cycle + anomaly + warming)[None, :] + rng.normal(0, 0.7, (n, len(cal)))
 
 
-def population(n: int, months: pd.PeriodIndex, args: argparse.Namespace, rng: np.random.Generator) -> np.ndarray:
+def population(n: int, cal: pd.DataFrame, args: argparse.Namespace, rng: np.random.Generator) -> np.ndarray:
     """Catchment population: log-normal around the median, growing at a fixed yearly rate."""
     start = rng.lognormal(np.log(args.population_median), args.population_sd, n)
-    years = np.arange(len(months)) / 12
+    years = np.arange(len(cal)) / cal["per_year"].to_numpy()
     return start[:, None] * (1 + args.population_growth) ** years[None, :]
 
 
@@ -81,7 +106,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0], formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("out_prefix", help="output path without extension; writes .csv and .geojson")
     parser.add_argument("--n-facilities", type=int, default=100)
-    parser.add_argument("--start", default="2015-01", help="first month, YYYY-MM")
+    parser.add_argument("--period", choices=["month", "week"], default="month")
+    parser.add_argument("--start", default="2015-01", help="first month, YYYY-MM; weekly data starts with the ISO week containing its first day")
     parser.add_argument("--n-years", type=int, default=10)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--bbox", type=float, nargs=4, default=[0.0, 4.0, 30.0, 36.0], metavar=("LAT_MIN", "LAT_MAX", "LON_MIN", "LON_MAX"))
@@ -105,25 +131,25 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     rng = np.random.default_rng(args.seed)
-    months = pd.period_range(args.start, periods=12 * args.n_years, freq="M")
+    cal = make_calendar(args)
     facilities = place_facilities(args, rng)
     n = len(facilities)
     values = {
-        "rainfall": rainfall(facilities["lat"].to_numpy(), months, args, rng),
-        "mean_temperature": temperature(n, months, args, rng),
-        "population": population(n, months, args, rng),
+        "rainfall": rainfall(facilities["lat"].to_numpy(), cal, args, rng),
+        "mean_temperature": temperature(n, cal, args, rng),
+        "population": population(n, cal, args, rng),
     }
     df = pd.DataFrame(
         {
-            "time_period": np.tile(months.strftime("%Y-%m"), n),
-            "location": np.repeat(facilities["location"].to_numpy(), len(months)),
+            "time_period": np.tile(cal["label"].to_numpy(), n),
+            "location": np.repeat(facilities["location"].to_numpy(), len(cal)),
             **{name: v.ravel().round(2) for name, v in values.items()},
         }
     )
     out = Path(args.out_prefix)
     df.to_csv(out.with_suffix(".csv"), index=False)
     out.with_suffix(".geojson").write_text(json.dumps(polygons(facilities)))
-    print(f"{n} facilities x {len(months)} months -> {out.with_suffix('.csv')}")
+    print(f"{n} facilities x {len(cal)} {args.period}s -> {out.with_suffix('.csv')}")
 
 
 if __name__ == "__main__":

@@ -1,8 +1,8 @@
-"""Simulate monthly disease cases at health facilities from rainfall, temperature and population.
+"""Simulate monthly or weekly disease cases at health facilities from rainfall, temperature and population.
 
 Expected cases for facility i in month t:
 
-    mu = population / 12 * annual_incidence / season_norm_i
+    mu = population / periods_per_year * annual_incidence / season_norm_i
          * facility_effect_i * season_it * heat_it * year_effect_t
          * global_trend_t * facility_trend_it * latent_it * intervention_t
 
@@ -17,6 +17,7 @@ simulated with the same result as one run over all periods.
 import json
 import sys
 import zlib
+from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -63,6 +64,22 @@ N_SPATIAL_FEATURES = 500
 KM_PER_DEGREE = 111.0
 
 
+def period_start(period: str) -> date:
+    """Start date of a chap period: ``YYYY-MM`` (month), ``YYYY-Www`` or ``start/end`` (week)."""
+    if "/" in period:
+        return date.fromisoformat(period.split("/")[0])
+    if "-W" in period:
+        year, week = period.split("-W")
+        return date.fromisocalendar(int(year), int(week), 1)
+    year, month = period.split("-")
+    return date(int(year), int(month), 1)
+
+
+def periods_per_year(period: str) -> float:
+    """12 for monthly periods, 365.25 / 7 for weekly ones."""
+    return 365.25 / 7 if "/" in period or "-W" in period else 12.0
+
+
 def rng_for(seed: int, *keys: str) -> np.random.Generator:
     """A generator that depends only on the seed and the keys, not on what else is in the dataset."""
     return np.random.default_rng([seed, *(zlib.crc32(key.encode()) for key in keys)])
@@ -92,12 +109,12 @@ def spatial_field(seed: int, lat: float, lon: float, range_km: float) -> float:
     return float(np.sqrt(2 / N_SPATIAL_FEATURES) * np.cos(frequencies @ xy + phases).sum())
 
 
-def yearly_random_walk(seed: int, sd: float, months_since_start: np.ndarray, *keys: str) -> np.ndarray:
-    """A random walk with one step per year, interpolated linearly between yearly knots; 0 at the first month."""
-    n_knots = int(months_since_start.max()) // 12 + 2
+def yearly_random_walk(seed: int, sd: float, years_since_start: np.ndarray, *keys: str) -> np.ndarray:
+    """A random walk with one step per year, interpolated linearly between yearly knots; 0 at the first period."""
+    n_knots = int(years_since_start.max()) + 2
     steps = [rng_for(seed, *keys, str(k)).normal(0, sd) for k in range(1, n_knots)]
     knots = np.concatenate([[0.0], np.cumsum(steps)])
-    return np.interp(months_since_start / 12, np.arange(n_knots), knots)
+    return np.interp(years_since_start, np.arange(n_knots), knots)
 
 
 def lagged_mean(values: np.ndarray, lag_min: int, lag_max: int) -> np.ndarray:
@@ -106,8 +123,8 @@ def lagged_mean(values: np.ndarray, lag_min: int, lag_max: int) -> np.ndarray:
     return np.mean([np.concatenate([np.full(lag, values[0]), values[: len(values) - lag]]) for lag in lags], axis=0)
 
 
-def reported(location: str, periods: list[str], months_since_start: np.ndarray, params: dict) -> np.ndarray:
-    """Which months the facility reported: late opening, multi-month outages and random missed months."""
+def reported(location: str, periods: list[str], months_since_start: np.ndarray, per_month: float, params: dict) -> np.ndarray:
+    """Which periods the facility reported: late opening, multi-month outages and random missed periods."""
     seed = int(params["seed"])
     n = len(periods)
     facility = rng_for(seed, "reporting", location)
@@ -121,8 +138,9 @@ def reported(location: str, periods: list[str], months_since_start: np.ndarray, 
         draw = rng_for(seed, "missing", location, period)
         if draw.uniform() > completeness:
             out[t] = False
-        if draw.uniform() < float(params["outage_rate"]):
-            out[t : t + int(draw.integers(1, int(params["outage_max_months"]) + 1))] = False
+        if draw.uniform() < float(params["outage_rate"]) / per_month:
+            months = int(draw.integers(1, int(params["outage_max_months"]) + 1))
+            out[t : t + round(months * per_month)] = False
     return out[:n]
 
 
@@ -131,11 +149,20 @@ def simulate_facility(df: pd.DataFrame, location: str, coords: tuple[float, floa
     seed = int(params["seed"])
     periods = [str(p) for p in df["time_period"]]
     n = len(df)
-    if n < 12:
-        raise ValueError(f"facility {location} has {n} periods; at least 12 are needed to normalize the season")
-    years = np.array([int(p[:4]) for p in periods])
-    months = np.array([int(p[5:7]) for p in periods])
-    months_since_start = (years - years[0]) * 12 + months - months[0]
+    starts = [period_start(p) for p in periods]
+    per_year = periods_per_year(periods[0])
+    # Rates, lags and durations are set in months; per_month converts them to periods (1 for monthly data).
+    per_month = per_year / 12
+    years = np.array([d.year for d in starts])
+    months = np.array([d.month for d in starts])
+    if per_month == 1:
+        months_since_start = ((years - years[0]) * 12 + months - months[0]).astype(float)
+    else:
+        months_since_start = np.array([(d - starts[0]).days for d in starts]) / 365.25 * 12
+    years_since_start = months_since_start / 12
+    first_year = round(per_year)
+    if n < first_year:
+        raise ValueError(f"facility {location} has {n} periods; at least a year ({first_year}) is needed to normalize the season")
     facility = rng_for(seed, "facility", location)
 
     total_sd = float(params["facility_sd"])
@@ -145,23 +172,24 @@ def simulate_facility(df: pd.DataFrame, location: str, coords: tuple[float, floa
 
     # Season: saturating in lagged rainfall, with a facility-specific lag, dry-season level and yearly amplitude.
     shift = int(facility.integers(0, int(params["facility_lag_shift_max"]) + 1))
-    rain = lagged_mean(
-        df["rainfall"].to_numpy(dtype=float), int(params["rainfall_lag_min"]) + shift, int(params["rainfall_lag_max"]) + shift
-    )
+    lag_min = int(params["rainfall_lag_min"]) + shift
+    lag_max = int(params["rainfall_lag_max"]) + shift
+    # A lag window of whole months [lag_min, lag_max] covers periods [lag_min, lag_max + 1) months back.
+    rain = lagged_mean(df["rainfall"].to_numpy(dtype=float), round(lag_min * per_month), round((lag_max + 1) * per_month) - 1)
     dry = float(params["dry_season_level"]) * np.exp(facility.normal(0, float(params["dry_season_sd"])))
     amplitude = np.exp([rng_for(seed, "amplitude", location, str(y)).normal(0, float(params["season_amplitude_sd"])) for y in years])
     seasonal = dry + amplitude * rain / (rain + float(params["rainfall_half_saturation"]))
     # annual_incidence is the incidence in the facility's first year, before the facility effect.
-    seasonal = seasonal / seasonal[:12].mean()
+    seasonal = seasonal / seasonal[:first_year].mean()
 
     excess_heat = np.clip(df["mean_temperature"].to_numpy(dtype=float) - float(params["temperature_threshold"]), 0, None)
     heat = np.exp(-float(params["temperature_effect"]) * excess_heat)
     year_effect = np.exp([rng_for(seed, "year", str(y)).normal(0, float(params["year_sd"])) for y in years])
     global_trend = np.exp(
-        float(params["annual_trend"]) * months_since_start / 12
-        + yearly_random_walk(seed, float(params["global_trend_sd"]), months_since_start, "global_trend")
+        float(params["annual_trend"]) * years_since_start
+        + yearly_random_walk(seed, float(params["global_trend_sd"]), years_since_start, "global_trend")
     )
-    facility_trend = np.exp(yearly_random_walk(seed, float(params["facility_trend_sd"]), months_since_start, "facility_trend", location))
+    facility_trend = np.exp(yearly_random_walk(seed, float(params["facility_trend_sd"]), years_since_start, "facility_trend", location))
     first, last = int(params["intervention_first_month"]), int(params["intervention_last_month"])
     # The intervention window may wrap around the new year, e.g. November to February.
     in_window = (months >= first) & (months <= last) if first <= last else (months >= first) | (months <= last)
@@ -169,7 +197,7 @@ def simulate_facility(df: pd.DataFrame, location: str, coords: tuple[float, floa
         in_window & (years >= int(params["intervention_start_year"])), 1 - float(params["intervention_effect"]), 1.0
     )
 
-    ar = float(params["latent_ar"])
+    ar = float(params["latent_ar"]) ** (1 / per_month)
     innovation_sd = float(params["latent_sd"]) * np.sqrt(1 - ar**2)
     latent = np.empty(n)
     for t, period in enumerate(periods):
@@ -177,7 +205,7 @@ def simulate_facility(df: pd.DataFrame, location: str, coords: tuple[float, floa
         latent[t] = draw.normal(0, float(params["latent_sd"])) if t == 0 else ar * latent[t - 1] + draw.normal(0, innovation_sd)
 
     mu = (
-        df["population"].to_numpy(dtype=float) / 12 * float(params["annual_incidence"])
+        df["population"].to_numpy(dtype=float) / per_year * float(params["annual_incidence"])
         * np.exp(log_facility) * seasonal * heat * year_effect * global_trend * facility_trend * np.exp(latent) * intervention
     )
 
@@ -185,10 +213,10 @@ def simulate_facility(df: pd.DataFrame, location: str, coords: tuple[float, floa
     stocked = np.ones(n)
     for t, period in enumerate(periods):
         draw = rng_for(seed, "stockout", location, period)
-        if draw.uniform() < float(params["stockout_rate"]):
-            stocked[t : t + draw.integers(1, 4)] = float(params["stockout_factor"])
+        if draw.uniform() < float(params["stockout_rate"]) / per_month:
+            stocked[t : t + round(int(draw.integers(1, 4)) * per_month)] = float(params["stockout_factor"])
 
-    is_reported = reported(location, periods, months_since_start, params)
+    is_reported = reported(location, periods, months_since_start, per_month, params)
     k = float(params["dispersion"])
     cases = df["disease_cases"].to_numpy(dtype=float).copy()
     for t, period in enumerate(periods):

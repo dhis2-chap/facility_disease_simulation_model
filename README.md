@@ -1,6 +1,6 @@
 # facility_disease_simulation_model
 
-A [chap](https://github.com/dhis2-chap/chap-core) simulation model for monthly disease cases at health facilities.
+A [chap](https://github.com/dhis2-chap/chap-core) simulation model for monthly or weekly disease cases at health facilities.
 It simulates `disease_cases` from `rainfall`, `mean_temperature` and `population`, producing datasets with a known
 data-generating process: facility-level heterogeneity, climate-driven seasonality, trends, noisy counts and
 incomplete reporting. Use it, for example, to test how a forecasting model behaves on data of a given size and
@@ -33,7 +33,8 @@ values, for months a facility did not report, need chap-core with
 
 ## Covariates (`make_covariates.py`)
 
-`uv run python make_covariates.py --help` lists every argument with its default.
+`uv run python make_covariates.py --help` lists every argument with its default. `--period week` writes ISO weeks
+(`2015-W01`) instead of months; the climate arguments are in months either way, and weekly rainfall is noisier.
 
 - **Facilities** are placed in clusters (think districts) inside a bounding box (`--bbox`, `--n-clusters`,
   `--cluster-spread-deg`) and named `facility_<n>`. Each gets a small square polygon so chap carries its coordinates
@@ -50,7 +51,7 @@ values, for months a facility did not report, need chap-core with
 Expected cases for facility *i* in month *t*:
 
 ```
-mu = population / 12 * annual_incidence / season_norm_i
+mu = population / periods_per_year * annual_incidence / season_norm_i
      * facility_effect_i * season_it * heat_it * year_effect_t
      * global_trend_t * facility_trend_it * latent_it * intervention_t
 ```
@@ -78,6 +79,13 @@ Months a facility did not report are left missing:
 - reporting outages of 1 to `outage_max_months` months start with probability `outage_rate` per month, e.g.
   insecurity or staff loss;
 - a share `late_start_fraction` of facilities open up to `late_start_max_months` after the first month.
+
+## Monthly and weekly data
+
+The simulator reads the period type from the data. Rates, lags and durations are given in months and converted
+to periods: weekly data uses the same rainfall lag window in weeks, a stockout or outage rate per week of
+`rate / 4.35`, durations in weeks, and the latent autocorrelation `latent_ar ** (1 / 4.35)` per week, so both
+period types describe the same underlying process. Population is spread over `periods_per_year`.
 
 ## Continuing a simulation
 

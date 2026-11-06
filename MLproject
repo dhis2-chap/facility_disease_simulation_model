@@ -7,7 +7,7 @@ required_covariates:
   - mean_temperature
   - population
 
-supported_period_type: month
+supported_period_type: any
 
 user_options:
   seed:
