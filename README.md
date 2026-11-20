@@ -98,3 +98,7 @@ as long as the file still starts at the same month (the season is normalized ove
 ```console
 uv run pytest
 ```
+
+## License
+
+AGPL-3.0, the same as [chap-core](https://github.com/dhis2-chap/chap-core). See `LICENSE`.
